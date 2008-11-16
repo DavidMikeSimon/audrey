@@ -93,9 +93,7 @@ class SourceList(list):
 
 if __name__ == "__main__":
 	s = FeedSource("http://feedproxy.google.com/ICanHasCheezburger")
-	print "1: %s" % str(s.read())
-	print "LATEST ENTRY %s" % (str(s.last_entry_date))
 	s.last_entry_date = datetime.datetime(2008, 11, 15)
 	s.http_etag = None
 	s.http_modified = None
-	print "2: %s" % str(s.read())
+	print str(s.read())

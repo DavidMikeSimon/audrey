@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, pickle, time, datetime, traceback
+import feedparser, pickle, time, datetime, traceback, urllib
 
 def tupleToDatetime(t):
 	try:
@@ -17,6 +17,7 @@ class Podcast:
 
 	Data attributes (read-only):
 	source - The Source that this Podcast came from.
+	sourceTitle - The title of the Source.
 	title - The title of this particular episode.
 	url - The URL to the audio file.
 	date - The date this Podcast was made available.
@@ -24,9 +25,10 @@ class Podcast:
 	deleted - A boolean value; true if the Podcast has already been deleted from disk.
 	"""
 
-	def __init__(self, source, title, url, date):
+	def __init__(self, source, sourceTitle, title, url, date):
 		"""Creates a Podcast with the given url and date."""
 		self.source = source
+		self.sourceTitle = sourceTitle
 		self.title = title
 		self.url = url
 		self.date = date
@@ -36,10 +38,10 @@ class Podcast:
 	def download(self):
 		"""Attempts to download the given Podcast, blocking while doing so.
 		
-		Raises a RuntimeError if the download failed."""
+		Raises an IOError if the download failed. If the downloaded succeeded, localPath is set."""
 	
 	def __str__(self):
-		return "%s - %s - %s" % (self.title, self.date, self.url) 
+		return "%s - %s - %s - %s" % (self.sourceTitle, self.title, self.date, self.url) 
 
 
 class Source:
@@ -50,7 +52,7 @@ class Source:
 	def read(self):
 		"""Returns a sequence of any new Podcasts found since the last read(), blocking while doing so.
 		
-		If the retrieval failed, raises a RuntimeError.
+		If the retrieval failed, raises an IOError.
 		
 		The very first read() returns nothing, but establishes the point at which updates begin."""
 		pass
@@ -74,6 +76,12 @@ class FeedSource(Source):
 			modified = self.http_modified,
 			agent = "Audrey/0.1"
 		)
+
+		if "status" not in d:
+			raise IOError("Unable to retrieve feed at url \"%s\"" % self.url)
+		
+		if d.status // 100 == 4:
+			raise IOError("Got error status code %u when retrieving feed at url \"%s\"" % (d.status, self.url))
 		
 		if "etag" in d:
 			self.http_etag = d.etag
@@ -92,7 +100,7 @@ class FeedSource(Source):
 			if newest_entry is None or edate > newest_entry:
 				newest_entry = edate
 			if self.last_entry_date is not None and edate > self.last_entry_date:
-				r.append(Podcast(self, entry.title, entry.enclosures[0].href, edate))
+				r.append(Podcast(self, d.feed.title, entry.title, entry.enclosures[0].href, edate))
 		if newest_entry is not None:
 			self.last_entry_date = newest_entry
 		

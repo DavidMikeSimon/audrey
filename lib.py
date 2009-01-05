@@ -1,12 +1,25 @@
 #!/usr/bin/python
 
-import feedparser, pickle, time, datetime, traceback, urllib
+import feedparser, pickle, time, datetime, traceback, urllib, os, random
+
 
 def tupleToDatetime(t):
 	try:
 		return datetime.datetime.fromtimestamp(time.mktime(t))
 	except:
 		return None
+
+
+def queueDir():
+	dirPath = os.path.expanduser("~/feedmeQueue")
+	if not os.path.isdir(dirPath):
+		try:
+			os.mkdir(dirPath)
+		except:
+			pass
+	if not os.path.isdir(dirPath):
+		raise IOError("Unable to find or create directory \"%s\"" % dirPath)
+	return dirPath
 
 
 class Podcast:
@@ -24,7 +37,7 @@ class Podcast:
 	localPath - Once downloaded, this attribute contains the path to the local copy of the audio file. None before download() is called.
 	deleted - A boolean value; true if the Podcast has already been deleted from disk.
 	"""
-
+	
 	def __init__(self, source, sourceTitle, title, url, date):
 		"""Creates a Podcast with the given url and date."""
 		self.source = source
@@ -39,6 +52,15 @@ class Podcast:
 		"""Attempts to download the given Podcast, blocking while doing so.
 		
 		Raises an IOError if the download failed. If the downloaded succeeded, localPath is set."""
+		destFile = "podcast-%s-%08u" % (str(datetime.datetime.now()), random.randint(1,10000000))
+		destPath = os.path.join(queueDir(), destFile)
+		try:
+			urllib.urlretrieve(self.url, destPath)
+			self.localPath = destPath
+		except:
+			if os.path.isfile(destPath):
+				os.unlink(destPath)
+			raise
 	
 	def __str__(self):
 		return "%s - %s - %s - %s" % (self.sourceTitle, self.title, self.date, self.url) 
@@ -80,7 +102,7 @@ class FeedSource(Source):
 		if "status" not in d:
 			raise IOError("Unable to retrieve feed at url \"%s\"" % self.url)
 		
-		if d.status // 100 == 4:
+		if d.status // 100 == 4 or d.status // 100 == 5:
 			raise IOError("Got error status code %u when retrieving feed at url \"%s\"" % (d.status, self.url))
 		
 		if "etag" in d:
@@ -114,9 +136,10 @@ class SourceList(list):
 	"""
 
 if __name__ == "__main__":
-	s = FeedSource("http://www.theskepticsguide.org/rss.xml")
+	s = FeedSource("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
 	s.last_entry_date = datetime.datetime(2008, 12, 15)
 	s.http_etag = None
 	s.http_modified = None
 	for p in s.read():
 		print p
+		p.download()

@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, pickle, time, datetime, traceback, urllib, os, random
+import feedparser, pickle, time, datetime, traceback, urllib, os, random, subprocess, re
 
 
 def tupleToDatetime(t):
@@ -98,7 +98,7 @@ class FeedSource(Source):
 			modified = self.http_modified,
 			agent = "Audrey/0.1"
 		)
-
+		
 		if "status" not in d:
 			raise IOError("Unable to retrieve feed at url \"%s\"" % self.url)
 		
@@ -129,6 +129,22 @@ class FeedSource(Source):
 		return r
 
 
+def createIso(podcasts, path):
+	"""Given a sequence of Podcasts, creates an ISO image at the target path with those podcasts on it.
+	
+	Returns True on success. On failure, throws IOError. 
+	"""
+	try:
+		proc = subprocess.Popen(("mkisofs", "-l", "-r", "-J", "-graft-points", "-o", path, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+	except OSError, e:
+		raise IOError("Unable to run mkisofs : %s" % str(e))
+	
+	if not proc.poll():
+		raise IOError("Mkisofs died immediately!")
+	
+	cleanPat = re.compile(r"[^A-Za-z0-9 ._-]")
+
+
 class SourceList(list):
 	"""A list of Sources.
 	
@@ -140,6 +156,8 @@ if __name__ == "__main__":
 	s.last_entry_date = datetime.datetime(2008, 12, 15)
 	s.http_etag = None
 	s.http_modified = None
-	for p in s.read():
+	podcasts = [p for p in s.read()]
+	for p in podcasts:
 		print p
 		p.download()
+	createIso(podcasts, "~/test.iso")

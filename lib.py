@@ -33,6 +33,7 @@ class Podcast:
 	sourceTitle - The title of the Source.
 	title - The title of this particular episode.
 	url - The URL to the audio file.
+	ext - The 3-letter filename extension corresponding to the audio file's type.
 	date - The date this Podcast was made available.
 	localPath - Once downloaded, this attribute contains the path to the local copy of the audio file. None before download() is called.
 	deleted - A boolean value; true if the Podcast has already been deleted from disk.
@@ -44,6 +45,7 @@ class Podcast:
 		self.sourceTitle = sourceTitle
 		self.title = title
 		self.url = url
+		self.ext = url[-3:]
 		self.date = date
 		self.localPath = None
 		self.deleted = False
@@ -55,7 +57,7 @@ class Podcast:
 		destFile = "podcast-%s-%08u" % (str(datetime.datetime.now()), random.randint(1,10000000))
 		destPath = os.path.join(queueDir(), destFile)
 		try:
-			urllib.urlretrieve(self.url, destPath)
+			(fn, headers) = urllib.urlretrieve(self.url, destPath)
 			self.localPath = destPath
 		except:
 			if os.path.isfile(destPath):
@@ -138,11 +140,24 @@ def createIso(podcasts, path):
 		proc = subprocess.Popen(("mkisofs", "-l", "-r", "-J", "-graft-points", "-o", path, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
 	except OSError, e:
 		raise IOError("Unable to run mkisofs : %s" % str(e))
-	
-	if not proc.poll():
+
+	if proc.poll() is not None: # None means the process hasn't returned a return code yet
 		raise IOError("Mkisofs died immediately!")
 	
 	cleanPat = re.compile(r"[^A-Za-z0-9 ._-]")
+	def cleanStr(s, maxLen):
+		return cleanPat.sub("", s)[:maxLen]
+	
+	idx = 1
+	for p in podcasts:
+		if p.localPath is not None:
+			proc.stdin.write("%s - %s - %02u-%02u-%02u (%03u).%s=%s\n" % (cleanStr(p.sourceTitle, 35), cleanStr(p.title, 50), p.date.year, p.date.month, p.date.day, idx, p.ext, p.localPath))
+			idx += 1
+	(stdout, stderr) = proc.communicate()
+	
+	if proc.returncode != 0:
+		raise IOError("Mkisofs reported an error! Return code %s, output %s" % (proc.returncode, stdout))
+	return True
 
 
 class SourceList(list):
@@ -153,11 +168,11 @@ class SourceList(list):
 
 if __name__ == "__main__":
 	s = FeedSource("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
-	s.last_entry_date = datetime.datetime(2008, 12, 15)
+	s.last_entry_date = datetime.datetime(2008, 12, 25)
 	s.http_etag = None
 	s.http_modified = None
 	podcasts = [p for p in s.read()]
 	for p in podcasts:
 		print p
 		p.download()
-	createIso(podcasts, "~/test.iso")
+	createIso(podcasts, "/home/localuser/test.iso")

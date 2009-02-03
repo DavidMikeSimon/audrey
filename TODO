@@ -1,0 +1,2 @@
+* Reasonable timeouts on all network actions
+* Better extension-guessing (if necessary...) 

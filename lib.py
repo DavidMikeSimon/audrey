@@ -1,13 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, pickle, processing, Queue
-
-
-def tupleToDatetime(t):
-	try:
-		return datetime.datetime.fromtimestamp(time.mktime(t))
-	except:
-		return None
+import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue
 
 
 class AudreyProcess(processing.Process):
@@ -53,14 +46,14 @@ class AudreyProcess(processing.Process):
 
 
 class FeedchkProcess(AudreyProcess):
-	"""A Process for checking RSS/Atom feeds with the feedparser module and finding new podcasts to be downloaded.
+	"""An AudreyProcess for checking RSS/Atom feeds with the feedparser module and finding new podcasts to be downloaded.
 	
-	Reads the following queue files:
-	feedchk-url-* - Each such file should contain a url to an RSS/Atom feed. These are not deleted.
+	Reads the following working files:
+	feedchk-url-* - Files containing a url to an RSS/Atom feed. These are not deleted.
 	
-	Writes the following queue files:
-	feedchk-status-* - Pickle files each containing a FeedStatus object, corresponding to feedchk-url-* files.
-	podfetch-desc-* - Read by the podfetch process.
+	Writes the following working files:
+	feedchk-status-* - Text files each describing how up-to-date we are on feeds, corresponding to feedchk-url-* files.
+	fetch-desc-* - Read by the fetch process.
 	"""
 	
 	def __init__(self, workingDir):
@@ -68,9 +61,62 @@ class FeedchkProcess(AudreyProcess):
 	
 	def doStuff(self):
 		while True:
-			self.logMsg("Feed check!")
 			self.pullEvent()
-			time.sleep(5)
+			time.sleep(600)
+
+
+class FetchProcess(AudreyProcess):
+	"""An AudreyProcess for downloading files.
+	
+	Reads the following working files:
+	fetch-desc-* - Files each containing two lines: URL, title. Read in lexicographical order. Deleted once corresponding isobuild-item-* files are created.
+	
+	Writes the following working files:
+	isobuild-item-* - Read by the isobuild process.
+	"""
+	
+	def __init__(self, workingDir):
+		super(FetchProcess, self).__init__(workingDir)
+	
+	def doStuff(self):
+		while True:
+			self.pullEvent()
+			time.sleep(1)
+
+
+class IsobuildProcess(AudreyProcess):
+	"""An AudreyProcess for building ISO9660 images from downloaded files.
+
+	Reads the following working files:
+	isobuild-item-* - Files containing actual content. The name of the file after "item-" will be the in-ISO name. Deleted once put into an ISO.
+
+	Writes the following working files:
+	discburn-iso-* - Read by the discburn process.
+	"""
+
+	def __init__(self, workingDir):
+		super(IsobuildProcess, self).__init__(workingDir)
+	
+	def doStuff(self):
+		while True:
+			self.pullEvent()
+			time.sleep(1)
+
+
+class DiscburnProcess(AudreyProcess):
+	"""An AudreyProcess for burning ISO9660 images to disc, and controlling the opening and closing of the tray.
+
+	Reads the following working files:
+	discburn-iso-* - Files containing ISO images to burn. Read in lexciographical order. Deleted once successfully burned.
+	"""
+
+	def __init__(self, workingDir):
+		super(DiscburnProcess, self).__init__(workingDir)
+	
+	def doStuff(self):
+		while True:
+			self.pullEvent()
+			time.sleep(0.1)
 
 
 class AudreyController:
@@ -92,6 +138,9 @@ class AudreyController:
 		self._statusMsg = "Initializing controller..."
 		self._subprocs = [
 			FeedchkProcess(workingDir),
+			FetchProcess(workingDir),
+			IsobuildProcess(workingDir),
+			DiscburnProcess(workingDir),
 		]
 	
 	def start(self):
@@ -101,12 +150,15 @@ class AudreyController:
 	def pump(self):
 		"""Checks for messages from the subprocesses and returns the current status string."""
 		for p in self._subprocs:
+			if not p.isAlive():
+				raise IOError("Subprocess of type %s died" % type(p))
+
 			try:
 				while True:
 					self._statusMsg = p._statusQueue.get_nowait()
 			except Queue.Empty:
 				pass
-
+			
 			try:
 				while True:
 					print p._logQueue.get_nowait()
@@ -203,7 +255,7 @@ class Source:
 		for entry in d.entries:
 			if "date_parsed" not in entry or "title" not in entry or len(entry.enclosures) < 1:
 				continue
-			edate = tupleToDatetime(entry.date_parsed)
+			edate = datetime.datetime.fromtimestamp(time.mktime(entry.date_parsed))
 			if newest_entry is None or edate > newest_entry:
 				newest_entry = edate
 			if self.last_entry_date is not None and edate > self.last_entry_date:

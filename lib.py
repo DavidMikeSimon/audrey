@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, pickle, time, datetime, traceback, urllib, os, random, subprocess, re
+import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re
 
 
 def tupleToDatetime(t):
@@ -11,7 +11,7 @@ def tupleToDatetime(t):
 
 
 def queueDir():
-	dirPath = os.path.expanduser("~/feedmeQueue")
+	dirPath = os.path.expanduser("~/queues-audrey")
 	if not os.path.isdir(dirPath):
 		try:
 			os.mkdir(dirPath)
@@ -69,10 +69,7 @@ class Podcast:
 
 
 class Source:
-	"""Base class for classes that fetch information from the web to create Podcasts.
-	
-	Sources can be pickled.
-	"""
+	"""Base class for classes that fetch information from the web to create Podcasts."""
 	def read(self):
 		"""Returns a sequence of any new Podcasts found since the last read(), blocking while doing so.
 		
@@ -131,13 +128,13 @@ class FeedSource(Source):
 		return r
 
 
-def createIso(podcasts, path):
+def createIso(podcasts, isoPath):
 	"""Given a sequence of Podcasts, creates an ISO image at the target path with those podcasts on it.
 	
 	Returns True on success. On failure, throws IOError. 
 	"""
 	try:
-		proc = subprocess.Popen(("mkisofs", "-l", "-r", "-J", "-graft-points", "-o", path, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+		proc = subprocess.Popen(("mkisofs", "-l", "-r", "-J", "-graft-points", "-o", isoPath, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
 	except OSError, e:
 		raise IOError("Unable to run mkisofs : %s" % str(e))
 
@@ -160,19 +157,36 @@ def createIso(podcasts, path):
 	return True
 
 
-class SourceList(list):
-	"""A list of Sources.
-	
-	SourceLists can be pickled.
+def burnDisc(isoPath):
+	"""Given a path to an ISO, burns it to disc.
+
+	Returns True on success. On failure, throws IOError.
 	"""
+	if not os.path.exists(isoPath):
+		raise IOError("No such file %s" % isoPath)
+	
+	try:
+		proc = subprocess.Popen(("wodim", "-tao", "-eject", "speed=10", "dev=/dev/cdrw", isoPath), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+	except OSError, e:
+		raise IOError("Unable to run wodim : %s" % str(e))
+	
+	(stdout, stderr) = proc.communicate()
+	if proc.returncode != 0:
+		raise IOError("Wodim reported an error! Return code %s, output %s" % (proc.returncode, stdout))
+	return True
+
+
+class SourceList(list):
+	"""A list of Sources."""
 
 if __name__ == "__main__":
-	s = FeedSource("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
-	s.last_entry_date = datetime.datetime(2008, 12, 25)
-	s.http_etag = None
-	s.http_modified = None
-	podcasts = [p for p in s.read()]
-	for p in podcasts:
-		print p
-		p.download()
-	createIso(podcasts, "/home/localuser/test.iso")
+#	s = FeedSource("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
+#	s.last_entry_date = datetime.datetime(2009, 1, 25)
+#	s.http_etag = None
+#	s.http_modified = None
+#	podcasts = [p for p in s.read()]
+#	for p in podcasts:
+#		print p
+#		p.download()
+#	createIso(podcasts, os.path.join(queueDir(), "test.iso"))
+	burnDisc(os.path.join(queueDir(), "test.iso"))

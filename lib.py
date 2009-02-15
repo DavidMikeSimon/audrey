@@ -59,10 +59,107 @@ class FeedchkProcess(AudreyProcess):
 	def __init__(self, workingDir):
 		super(FeedchkProcess, self).__init__(workingDir)
 	
+	def _checkFeed(self, fn):
+		self.logMsg("Reading feed url file %s" % fn)
+		
+		statusPath = os.path.join(self.workingDir, fn.replace("-url-", "-status-", 1))
+		
+		fh = open(os.path.join(self.workingDir, fn))
+		url = fh.read().strip()
+		fh.close()
+		
+		http_etag = None
+		http_modified = None
+		last_entry_date = None
+		
+		if os.path.exists(statusPath):
+			fh = open(statusPath)
+			etag_line = fh.readline().strip()
+			if etag_line != "None":
+				http_etag = etag_line # E-Tags are just strings for universal feed parser
+			modified_line = fh.readline().strip()
+			if modified_line != "None":
+				http_modified = tuple([int(x) for x in modified_line.split(",")]) # Modified headers are tuples of integers for universal feed parser
+			last_entry_line = fh.readline().strip()
+			if last_entry_line != "None":
+				last_entry_date = datetime.datetime(*tuple([int(x) for x in last_entry_line.split(",")]))
+			fh.close()
+		
+		d = feedparser.parse(
+			url,
+			etag = http_etag,
+			modified = http_modified,
+			agent = "Audrey/0.1"
+		)
+		
+		if "status" not in d:
+			raise IOError("Unable to retrieve feed at url \"%s\"" % url)
+		
+		if d.status // 100 == 4 or d.status // 100 == 5:
+			raise IOError("Got error status code %u when retrieving feed at url \"%s\"" % (d.status, url))
+		
+		if "etag" in d:
+			http_etag = d.etag
+		
+		if "modified" in d:
+			http_modified = d.modified
+		
+		if "status" in d and d.status == 301 and "href" in d:
+			self.logMsg("Server status code 301 requesting we switch to url %s" % d.href)
+		
+		files = [] # A list of (edate, url, title) tuples
+		
+		newest_entry = None
+		for entry in d.entries:
+			if "date_parsed" not in entry or "title" not in entry or len(entry.enclosures) < 1:
+				continue
+			edate = datetime.datetime.fromtimestamp(time.mktime(entry.date_parsed))
+			if newest_entry is None or edate > newest_entry:
+				newest_entry = edate
+			if last_entry_date is not None and edate > last_entry_date:
+				files.append(edate, entry.enclosures[0].href, "%s - %s" % (d.feed.title, entry.title))
+		if newest_entry is not None:
+			last_entry_date = newest_entry
+		
+		# Pick only the 3 most recent podcasts retrieved (in case of a mishap where the archives are marked by the source as new again)
+		files.sort(cmp = lambda x, y: cmp(x[0], y[0]))
+		n = 0
+		for (file_date, file_url, file_title) in files[-3:]:
+			n += 1
+			fh = open(os.path.join(self.workingDir, "fetch-desc-%s-%03u" % (str(datetime.datetime.now()).replace(" ", "-"), n)))
+			fh.write("%s\n", file_url)
+			fh.write("%s\n", file_title)
+			fh.close()
+		
+		fh = open(statusPath, "w")
+		if http_etag is not None:
+			fh.write("%s\n" % http_etag)
+		else:
+			fh.write("None\n")
+		if http_modified is not None:
+			fh.write("%s\n" % (",".join(str(i) for i in http_modified)))
+		else:
+			fh.write("None\n")
+		if last_entry_date is not None:
+			fh.write("%i,%i,%i,%i,%i,%i\n" % (
+				last_entry_date.year, last_entry_date.month, last_entry_date.day,
+				last_entry_date.hour, last_entry_date.minute, last_entry_date.second,
+			))
+		else:
+			fh.write("None\n")
+		fh.close()
+	
 	def doStuff(self):
 		while True:
 			self.pullEvent()
-			time.sleep(600)
+			self.logMsg("Checking feeds")
+			for fn in os.listdir(self.workingDir):
+				if fn.startswith("feedchk-url-"):
+					try:
+						self._checkFeed(fn)
+					except IOError, e:
+						self.logMsg("Error with %s - %s" % (fn, str(e)))
+			time.sleep(3600)
 
 
 class FetchProcess(AudreyProcess):
@@ -104,7 +201,7 @@ class IsobuildProcess(AudreyProcess):
 
 
 class DiscburnProcess(AudreyProcess):
-	"""An AudreyProcess for burning ISO9660 images to disc, and controlling the opening and closing of the tray.
+	"""An AudreyProcess for burning ISO9660 images to disc, and also controlling the opening and closing of the tray.
 
 	Reads the following working files:
 	discburn-iso-* - Files containing ISO images to burn. Read in lexciographical order. Deleted once successfully burned.
@@ -116,7 +213,7 @@ class DiscburnProcess(AudreyProcess):
 	def doStuff(self):
 		while True:
 			self.pullEvent()
-			time.sleep(0.1)
+			time.sleep(0.5)
 
 
 class AudreyController:
@@ -126,24 +223,36 @@ class AudreyController:
 	"""
 	
 	def __init__(self):
-		workingDir = os.path.expanduser("~/audrey-working")
-		if not os.path.isdir(workingDir):
+		# Create the working directory if necessary
+		self._workingDir = os.path.expanduser("~/audrey-working")
+		if not os.path.isdir(self._workingDir):
 			try:
-				os.mkdir(workingDir)
+				os.mkdir(self._workingDir)
 			except:
 				pass
-		if not os.path.isdir(workingDir):
-			raise IOError("Unable to find or create directory \"%s\"" % workingDir)
+		if not os.path.isdir(self._workingDir):
+			raise IOError("Unable to find or create directory \"%s\"" % self._workingDir)
+
+		# Delete any left-over temp files from possible prior crashes
+		for fn in os.listdir(self._workingDir):
+			if fn.startswith("temp-"):
+				os.unlink(os.path.join(self._workingDir, fn))
 		
 		self._statusMsg = "Initializing controller..."
 		self._subprocs = [
-			FeedchkProcess(workingDir),
-			FetchProcess(workingDir),
-			IsobuildProcess(workingDir),
-			DiscburnProcess(workingDir),
+			FeedchkProcess(self._workingDir),
+			FetchProcess(self._workingDir),
+			IsobuildProcess(self._workingDir),
+			DiscburnProcess(self._workingDir),
 		]
 	
+	def _addToLog(self, msg):
+		fn = file(os.path.join(self._workingDir, "log"), "a")
+		fn.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+		fn.close()
+	
 	def start(self):
+		self._addToLog("AudreyController starting")
 		for p in self._subprocs:
 			p.start()
 	
@@ -151,8 +260,8 @@ class AudreyController:
 		"""Checks for messages from the subprocesses and returns the current status string."""
 		for p in self._subprocs:
 			if not p.isAlive():
-				raise IOError("Subprocess of type %s died" % type(p))
-
+				raise IOError("Subprocess of type %s died" % p.__class__.__name__)
+			
 			try:
 				while True:
 					self._statusMsg = p._statusQueue.get_nowait()
@@ -161,7 +270,7 @@ class AudreyController:
 			
 			try:
 				while True:
-					print p._logQueue.get_nowait()
+					self._addToLog("%s: %s" % (p.__class__.__name__, p._logQueue.get_nowait()))
 			except Queue.Empty:
 				pass
 			
@@ -210,60 +319,6 @@ class Podcast:
 	
 	def __str__(self):
 		return "%s - %s - %s - %s" % (self.sourceTitle, self.title, self.date, self.url) 
-
-
-class Source:
-	"""Retrieves Podcasts from an RSS/Atom/etc. feed."""
-	def __init__(self, url):
-		"""Creates a FeedSource which reads from the XML document at the given URL."""
-		self.url = url
-		self.http_etag = None
-		self.http_modified = None
-		self.last_entry_date = None
-	
-	def read(self):
-		"""Returns a sequence of any new Podcasts found since the last read(), blocking while doing so.
-		
-		If the retrieval failed, raises an IOError.
-		
-		The very first read() returns nothing, but establishes the point at which updates begin."""
-		r = []
-		
-		d = feedparser.parse(
-			self.url,
-			etag = self.http_etag,
-			modified = self.http_modified,
-			agent = "Audrey/0.1"
-		)
-		
-		if "status" not in d:
-			raise IOError("Unable to retrieve feed at url \"%s\"" % self.url)
-		
-		if d.status // 100 == 4 or d.status // 100 == 5:
-			raise IOError("Got error status code %u when retrieving feed at url \"%s\"" % (d.status, self.url))
-		
-		if "etag" in d:
-			self.http_etag = d.etag
-		
-		if "modified" in d:
-			self.http_modified = d.modified
-		
-		if "status" in d and d.status == 301 and "href" in d:
-			self.url = d.href
-		
-		newest_entry = None
-		for entry in d.entries:
-			if "date_parsed" not in entry or "title" not in entry or len(entry.enclosures) < 1:
-				continue
-			edate = datetime.datetime.fromtimestamp(time.mktime(entry.date_parsed))
-			if newest_entry is None or edate > newest_entry:
-				newest_entry = edate
-			if self.last_entry_date is not None and edate > self.last_entry_date:
-				r.append(Podcast(self, d.feed.title, entry.title, entry.enclosures[0].href, edate))
-		if newest_entry is not None:
-			self.last_entry_date = newest_entry
-		
-		return r
 
 
 def createIso(podcasts, isoPath):
@@ -333,5 +388,4 @@ if __name__ == "__main__":
 	controller.start()
 	while True:
 		controller.pump()
-		time.sleep(1)
-		print ".",
+		time.sleep(0.1)

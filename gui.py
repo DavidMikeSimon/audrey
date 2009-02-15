@@ -14,7 +14,8 @@ class MainWindow:
 		gobject.threads_init()
 		
 		# The main window
-		self.window = gtk.Window(); self.window.connect("destroy", self.quit); self.window.set_title("Audrey"); self.window.set_size_request(500, 200)
+		self.window = gtk.Window(); self.window.connect("destroy", self.quit); self.window.set_title("Audrey"); self.window.set_size_request(500, 400)
+		self.window.set_resizable(False); self.window.set_deletable(False); self.window.move(100, 100)
 		winBox = gtk.VBox(spacing = 2); winBox.set_border_width(3); self.window.add(winBox)
 		
 		# Status message

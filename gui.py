@@ -14,22 +14,12 @@ class MainWindow:
 		gobject.threads_init()
 		
 		# The main window
-		self.window = gtk.Window(); self.window.connect("destroy", self.quit); self.window.set_title("Audrey"); self.window.set_size_request(750, 550)
+		self.window = gtk.Window(); self.window.connect("destroy", self.quit); self.window.set_title("Audrey"); self.window.set_size_request(500, 200)
 		winBox = gtk.VBox(spacing = 2); winBox.set_border_width(3); self.window.add(winBox)
 		
-		# Menu bar
-		menuBar = gtk.MenuBar(); winBox.pack_start(menuBar, expand = False)
-		
-		# File menu
-		fileMenuItem = gtk.MenuItem("_File"); menuBar.append(fileMenuItem)
-		fileMenu = gtk.Menu(); fileMenuItem.set_submenu(fileMenu)
-		fileQuit = gtk.ImageMenuItem(gtk.STOCK_QUIT); fileQuit.connect("activate", self.quit); fileMenu.append(fileQuit)
-		
-		# The content frame
-		contentRow = gtk.HBox();  winBox.pack_start(contentRow)
-		contentFrame = gtk.Frame(); contentFrame.set_size_request(-1, 300); contentRow.pack_start(contentFrame)
-		self.contentBox = gtk.EventBox(); self.contentBox.modify_bg(gtk.STATE_NORMAL, gtk.gdk.color_parse("#FFFFFF")); contentFrame.add(self.contentBox)
-		
+		# Status message
+		statusMsg = gtk.Label("Status"); winBox.pack_start(statusMsg)
+
 		# Okay, we've prepared everything, let's show the window
 		self.window.show_all(); self.window.set_focus(None)
 

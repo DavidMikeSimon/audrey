@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re
+import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, pickle, processing, Queue
 
 
 def tupleToDatetime(t):
@@ -10,16 +10,110 @@ def tupleToDatetime(t):
 		return None
 
 
-def queueDir():
-	dirPath = os.path.expanduser("~/queues-audrey")
-	if not os.path.isdir(dirPath):
+class AudreyProcess(processing.Process):
+	"""Base class for the various Audrey sub-processes.
+	
+	Sub-classes must implement the doStuff() function, which must call pullEvent() periodically.
+	
+	Data attributes:
+	workingDir - Path to the working directory.
+	"""
+	
+	def __init__(self, workingDir):
+		super(AudreyProcess, self).__init__()
+		self.workingDir = workingDir
+		self._logQueue = processing.Queue()
+		self._statusQueue = processing.Queue()
+		self._eventQueue = processing.Queue()
+	
+	def run(self):
+		self.doStuff()
+	
+	def pullEvent(self):
+		"""Returns a string with the latest input event, or None if there is no such event.
+		
+		Must be called periodically by doStuff()."""
+		r = None
 		try:
-			os.mkdir(dirPath)
-		except:
-			pass
-	if not os.path.isdir(dirPath):
-		raise IOError("Unable to find or create directory \"%s\"" % dirPath)
-	return dirPath
+			while True:
+				r = self._eventQueue.get_nowait()
+		except Queue.Empty:
+			return r
+	
+	def logMsg(self, msg):
+		"""Emits a log message."""
+		self._logQueue.put(msg)
+	
+	def statusMsg(self, msg):
+		"""Sets a status message. This is used for showing cd burner state information."""
+		self._statusQueue.put(msg)
+	
+	def doStuff(self):
+		raise NotImplementedError
+
+
+class FeedchkProcess(AudreyProcess):
+	"""A Process for checking RSS/Atom feeds with the feedparser module and finding new podcasts to be downloaded.
+	
+	Reads the following queue files:
+	feedchk-url-* - Each such file should contain a url to an RSS/Atom feed. These are not deleted.
+	
+	Writes the following queue files:
+	feedchk-status-* - Pickle files each containing a FeedStatus object, corresponding to feedchk-url-* files.
+	podfetch-desc-* - Read by the podfetch process.
+	"""
+	
+	def __init__(self, workingDir):
+		super(FeedchkProcess, self).__init__(workingDir)
+	
+	def doStuff(self):
+		while True:
+			self.logMsg("Feed check!")
+			self.pullEvent()
+			time.sleep(5)
+
+
+class AudreyController:
+	"""Class that starts up and runs the various audrey processes.
+	
+	Instantiate this class and then call start(). After that, periodically call pump() to get new status messages and keep everything going.
+	"""
+	
+	def __init__(self):
+		workingDir = os.path.expanduser("~/audrey-working")
+		if not os.path.isdir(workingDir):
+			try:
+				os.mkdir(workingDir)
+			except:
+				pass
+		if not os.path.isdir(workingDir):
+			raise IOError("Unable to find or create directory \"%s\"" % workingDir)
+		
+		self._statusMsg = "Initializing controller..."
+		self._subprocs = [
+			FeedchkProcess(workingDir),
+		]
+	
+	def start(self):
+		for p in self._subprocs:
+			p.start()
+	
+	def pump(self):
+		"""Checks for messages from the subprocesses and returns the current status string."""
+		for p in self._subprocs:
+			try:
+				while True:
+					self._statusMsg = p._statusQueue.get_nowait()
+			except Queue.Empty:
+				pass
+
+			try:
+				while True:
+					print p._logQueue.get_nowait()
+			except Queue.Empty:
+				pass
+			
+		return self._statusMsg
 
 
 class Podcast:
@@ -33,7 +127,6 @@ class Podcast:
 	sourceTitle - The title of the Source.
 	title - The title of this particular episode.
 	url - The URL to the audio file.
-	ext - The 3-letter filename extension corresponding to the audio file's type.
 	date - The date this Podcast was made available.
 	localPath - Once downloaded, this attribute contains the path to the local copy of the audio file. None before download() is called.
 	deleted - A boolean value; true if the Podcast has already been deleted from disk.
@@ -45,7 +138,6 @@ class Podcast:
 		self.sourceTitle = sourceTitle
 		self.title = title
 		self.url = url
-		self.ext = url[-3:]
 		self.date = date
 		self.localPath = None
 		self.deleted = False
@@ -69,18 +161,7 @@ class Podcast:
 
 
 class Source:
-	"""Base class for classes that fetch information from the web to create Podcasts."""
-	def read(self):
-		"""Returns a sequence of any new Podcasts found since the last read(), blocking while doing so.
-		
-		If the retrieval failed, raises an IOError.
-		
-		The very first read() returns nothing, but establishes the point at which updates begin."""
-		pass
-
-
-class FeedSource(Source):
-	"""A Source that retrieves Podcasts from an RSS/Atom/etc. feed."""
+	"""Retrieves Podcasts from an RSS/Atom/etc. feed."""
 	def __init__(self, url):
 		"""Creates a FeedSource which reads from the XML document at the given URL."""
 		self.url = url
@@ -89,6 +170,11 @@ class FeedSource(Source):
 		self.last_entry_date = None
 	
 	def read(self):
+		"""Returns a sequence of any new Podcasts found since the last read(), blocking while doing so.
+		
+		If the retrieval failed, raises an IOError.
+		
+		The very first read() returns nothing, but establishes the point at which updates begin."""
 		r = []
 		
 		d = feedparser.parse(
@@ -130,13 +216,15 @@ class FeedSource(Source):
 
 def createIso(podcasts, isoPath):
 	"""Given a sequence of Podcasts, creates an ISO image at the target path with those podcasts on it.
+
+	Blocks during this entire procedure.
 	
 	Returns True on success. On failure, throws IOError. 
 	"""
 	try:
-		proc = subprocess.Popen(("mkisofs", "-l", "-r", "-J", "-graft-points", "-o", isoPath, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+		proc = subprocess.Popen(("genisoimage", "-l", "-r", "-J", "-graft-points", "-o", isoPath, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
 	except OSError, e:
-		raise IOError("Unable to run mkisofs : %s" % str(e))
+		raise IOError("Unable to run genisoimage : %s" % str(e))
 
 	if proc.poll() is not None: # None means the process hasn't returned a return code yet
 		raise IOError("Mkisofs died immediately!")
@@ -159,6 +247,8 @@ def createIso(podcasts, isoPath):
 
 def burnDisc(isoPath):
 	"""Given a path to an ISO, burns it to disc.
+	
+	Blocks during this entire procedure.
 
 	Returns True on success. On failure, throws IOError.
 	"""
@@ -176,11 +266,8 @@ def burnDisc(isoPath):
 	return True
 
 
-class SourceList(list):
-	"""A list of Sources."""
-
 if __name__ == "__main__":
-#	s = FeedSource("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
+#	s = Source("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
 #	s.last_entry_date = datetime.datetime(2009, 1, 25)
 #	s.http_etag = None
 #	s.http_modified = None
@@ -189,4 +276,10 @@ if __name__ == "__main__":
 #		print p
 #		p.download()
 #	createIso(podcasts, os.path.join(queueDir(), "test.iso"))
-	burnDisc(os.path.join(queueDir(), "test.iso"))
+#	burnDisc(os.path.join(queueDir(), "test.iso"))
+	controller = AudreyController()
+	controller.start()
+	while True:
+		controller.pump()
+		time.sleep(1)
+		print ".",

@@ -118,7 +118,8 @@ class FeedchkProcess(AudreyProcess):
 		
 		newest_entry = None
 		for entry in d.entries:
-			if "date_parsed" not in entry or "title" not in entry or len(entry.enclosures) < 1:
+			if "date_parsed" not in entry or "title" not in entry or "enclosures" not in entry or len(entry.enclosures) < 1:
+				self.logMsg("Skipping weird entry")
 				continue
 			edate = datetime.datetime.fromtimestamp(time.mktime(entry.date_parsed))
 			if newest_entry is None or edate > newest_entry:
@@ -133,10 +134,10 @@ class FeedchkProcess(AudreyProcess):
 					cleanStr(d.feed.title, 40),
 					cleanStr(entry.title, 40),
 				)
-				files.append(edate, entry.enclosures[0].href, fTitle)
+				files.append((edate, entry.enclosures[0].href, fTitle))
 		if newest_entry is not None:
 			last_entry_date = newest_entry
-
+		
 		if len(files) > 0:
 			self.logMsg("Got %u seeming to be new" % len(files))
 		
@@ -146,9 +147,9 @@ class FeedchkProcess(AudreyProcess):
 		for (file_date, file_url, file_title) in files[-3:]:
 			n += 1
 			targetFn = "fetch-desc-%s-%s-%03u" % (fn.replace("feedchk-url-", ""), str(datetime.datetime.now()).replace(" ", "-"), n)
-			fh = open(os.path.join(self.workingDir, "temp-%s" % targetFn))
-			fh.write("%s\n", file_url)
-			fh.write("%s\n", file_title)
+			fh = open(os.path.join(self.workingDir, "temp-%s" % targetFn), "w")
+			fh.write("%s\n" % file_url)
+			fh.write("%s\n" % file_title)
 			fh.close()
 			os.rename(os.path.join(self.workingDir, "temp-%s" % targetFn), os.path.join(self.workingDir, targetFn)) # Give control to FetchProcess
 			self.logMsg("Wrote %s" % targetFn)
@@ -175,12 +176,13 @@ class FeedchkProcess(AudreyProcess):
 		while True:
 			self.pullEvent()
 			self.logMsg("Checking feeds")
-			for fn in os.listdir(self.workingDir):
+			for fn in sorted(os.listdir(self.workingDir)):
 				if fn.startswith("feedchk-url-"):
 					try:
 						self._checkFeed(fn)
 					except IOError, e:
 						self.logMsg("Error with %s - %s" % (fn, str(e)))
+			self.logMsg("Finished checking feeds")
 			time.sleep(3600)
 
 
@@ -207,9 +209,9 @@ class FetchProcess(AudreyProcess):
 		
 		destPath = os.path.join(self.workingDir, "temp-fetch")
 		try:
-			self.logMsg("Fetching URL %u" % url)
-			(fn, headers) = urllib.urlretrieve(url, destPath)
-			self.logMsg("Done fetching URL %u" % url)
+			self.logMsg("Fetching URL %s" % url)
+			(retrFn, retrHeaders) = urllib.urlretrieve(url, destPath)
+			self.logMsg("Done fetching URL %s" % url)
 		except:
 			if os.path.isfile(destPath):
 				os.unlink(destPath)
@@ -220,7 +222,7 @@ class FetchProcess(AudreyProcess):
 		
 		finalName = title
 		for knownExt in (".ogg", ".mp3", ".mp4", ".m4a", ".wma", ".flc", ".flac"):
-			if url.tolower().endswith(knownExt):
+			if url.lower().endswith(knownExt):
 				finalName += knownExt
 				break
 		
@@ -238,13 +240,13 @@ class FetchProcess(AudreyProcess):
 	def doStuff(self):
 		while True:
 			self.pullEvent()
-			for fn in os.listdir(self.workingDir):
+			for fn in sorted(os.listdir(self.workingDir)):
 				if fn.startswith("fetch-desc-"):
 					try:
 						self._fetch(fn)
 					except IOError, e:
 						self.logMsg("Error with %s - %s" % (fn, str(e)))
-			time.sleep(1)
+			time.sleep(60)
 
 
 class IsobuildProcess(AudreyProcess):
@@ -325,9 +327,6 @@ class AudreyController:
 	def pump(self):
 		"""Checks for messages from the subprocesses and returns the current status string."""
 		for p in self._subprocs:
-			if not p.isAlive():
-				raise IOError("Subprocess of type %s died" % p.__class__.__name__)
-			
 			try:
 				while True:
 					self._statusMsg = p._statusQueue.get_nowait()
@@ -339,6 +338,12 @@ class AudreyController:
 					self._addToLog("%s: %s" % (p.__class__.__name__, p._logQueue.get_nowait()))
 			except Queue.Empty:
 				pass
+			
+			if not p.isAlive():
+				self._addToLog("Subprocess %s died, killing all subprocesses and raising RuntimeError" % p.__class__.__name__)
+				for p in self._subprocs:
+					p.terminate()
+				raise RuntimeError("Subprocess died")
 			
 		return self._statusMsg
 

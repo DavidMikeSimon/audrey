@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue
+import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue, traceback
 
 
 class AudreyProcess(processing.Process):
@@ -20,7 +20,10 @@ class AudreyProcess(processing.Process):
 		self._eventQueue = processing.Queue()
 	
 	def run(self):
-		self.doStuff()
+		try:
+			self.doStuff()
+		except:
+			self.logMsg("Uncaught exception in subprocess! Traceback:\n%s" % traceback.format_exc())
 	
 	def pullEvent(self):
 		"""Returns a string with the latest input event, or None if there is no such event.
@@ -108,6 +111,10 @@ class FeedchkProcess(AudreyProcess):
 			self.logMsg("Server status code 301 requesting we switch to url %s" % d.href)
 		
 		files = [] # A list of (edate, url, title) tuples
+	
+		cleanPat = re.compile(r"[^A-Za-z0-9 #()._-]")
+		def cleanStr(s, maxLen):
+			return cleanPat.sub("", s)[:maxLen]
 		
 		newest_entry = None
 		for entry in d.entries:
@@ -117,19 +124,34 @@ class FeedchkProcess(AudreyProcess):
 			if newest_entry is None or edate > newest_entry:
 				newest_entry = edate
 			if last_entry_date is not None and edate > last_entry_date:
-				files.append(edate, entry.enclosures[0].href, "%s - %s" % (d.feed.title, entry.title))
+				fTitle = "%04u-%02u-%02u-%02u:%02u %s - %s" % (
+					edate.year,
+					edate.month,
+					edate.day,
+					edate.hour,
+					edate.minute,
+					cleanStr(d.feed.title, 40),
+					cleanStr(entry.title, 40),
+				)
+				files.append(edate, entry.enclosures[0].href, fTitle)
 		if newest_entry is not None:
 			last_entry_date = newest_entry
+
+		if len(files) > 0:
+			self.logMsg("Got %u seeming to be new" % len(files))
 		
-		# Pick only the 3 most recent podcasts retrieved (in case of a mishap where the archives are marked by the source as new again)
+		# Pick only the 3 most recent podcasts retrieved (in case of a mishap where the archives are mistakenly presented by the source as new again)
 		files.sort(cmp = lambda x, y: cmp(x[0], y[0]))
 		n = 0
 		for (file_date, file_url, file_title) in files[-3:]:
 			n += 1
-			fh = open(os.path.join(self.workingDir, "fetch-desc-%s-%03u" % (str(datetime.datetime.now()).replace(" ", "-"), n)))
+			targetFn = "fetch-desc-%s-%s-%03u" % (fn.replace("feedchk-url-", ""), str(datetime.datetime.now()).replace(" ", "-"), n)
+			fh = open(os.path.join(self.workingDir, "temp-%s" % targetFn))
 			fh.write("%s\n", file_url)
 			fh.write("%s\n", file_title)
 			fh.close()
+			os.rename(os.path.join(self.workingDir, "temp-%s" % targetFn), os.path.join(self.workingDir, targetFn)) # Give control to FetchProcess
+			self.logMsg("Wrote %s" % targetFn)
 		
 		fh = open(statusPath, "w")
 		if http_etag is not None:
@@ -175,18 +197,62 @@ class FetchProcess(AudreyProcess):
 	def __init__(self, workingDir):
 		super(FetchProcess, self).__init__(workingDir)
 	
+	def _fetch(self, fn):
+		self.logMsg("Reading fetch description file %s" % fn)
+		
+		fh = open(os.path.join(self.workingDir, fn))
+		url = fh.readline().strip()
+		title = fh.readline().strip()
+		fh.close()
+		
+		destPath = os.path.join(self.workingDir, "temp-fetch")
+		try:
+			self.logMsg("Fetching URL %u" % url)
+			(fn, headers) = urllib.urlretrieve(url, destPath)
+			self.logMsg("Done fetching URL %u" % url)
+		except:
+			if os.path.isfile(destPath):
+				os.unlink(destPath)
+			raise
+		
+		if not os.path.exists(destPath):
+			raise IOError("Cannot find temp-fetch")
+		
+		finalName = title
+		for knownExt in (".ogg", ".mp3", ".mp4", ".m4a", ".wma", ".flc", ".flac"):
+			if url.tolower().endswith(knownExt):
+				finalName += knownExt
+				break
+		
+		targetFn = "isobuild-item-%s" % finalName
+		n = 0
+		while os.path.exists(os.path.join(self.workingDir, targetFn)):
+			n += 1
+			targetFn = "isobuild-item-%s %03u" % (finalName, n)
+		os.rename(os.path.join(self.workingDir, "temp-fetch"), os.path.join(self.workingDir, targetFn))
+		self.logMsg("Wrote %s" % targetFn)
+		
+		os.unlink(os.path.join(self.workingDir, fn))
+		self.logMsg("Deleted %s" % fn)
+	
 	def doStuff(self):
 		while True:
 			self.pullEvent()
+			for fn in os.listdir(self.workingDir):
+				if fn.startswith("fetch-desc-"):
+					try:
+						self._fetch(fn)
+					except IOError, e:
+						self.logMsg("Error with %s - %s" % (fn, str(e)))
 			time.sleep(1)
 
 
 class IsobuildProcess(AudreyProcess):
 	"""An AudreyProcess for building ISO9660 images from downloaded files.
-
+	
 	Reads the following working files:
 	isobuild-item-* - Files containing actual content. The name of the file after "item-" will be the in-ISO name. Deleted once put into an ISO.
-
+	
 	Writes the following working files:
 	discburn-iso-* - Read by the discburn process.
 	"""
@@ -277,50 +343,6 @@ class AudreyController:
 		return self._statusMsg
 
 
-class Podcast:
-	"""A single podcast retrieved from a Source.
-	
-	When downloaded, a Podcast keeps the audio file on disk. In addition, the Podcast
-	objects themselves are picklable, so that they can be saved to disk and re-loaded later.
-
-	Data attributes (read-only):
-	source - The Source that this Podcast came from.
-	sourceTitle - The title of the Source.
-	title - The title of this particular episode.
-	url - The URL to the audio file.
-	date - The date this Podcast was made available.
-	localPath - Once downloaded, this attribute contains the path to the local copy of the audio file. None before download() is called.
-	deleted - A boolean value; true if the Podcast has already been deleted from disk.
-	"""
-	
-	def __init__(self, source, sourceTitle, title, url, date):
-		"""Creates a Podcast with the given url and date."""
-		self.source = source
-		self.sourceTitle = sourceTitle
-		self.title = title
-		self.url = url
-		self.date = date
-		self.localPath = None
-		self.deleted = False
-	
-	def download(self):
-		"""Attempts to download the given Podcast, blocking while doing so.
-		
-		Raises an IOError if the download failed. If the downloaded succeeded, localPath is set."""
-		destFile = "podcast-%s-%08u" % (str(datetime.datetime.now()), random.randint(1,10000000))
-		destPath = os.path.join(queueDir(), destFile)
-		try:
-			(fn, headers) = urllib.urlretrieve(self.url, destPath)
-			self.localPath = destPath
-		except:
-			if os.path.isfile(destPath):
-				os.unlink(destPath)
-			raise
-	
-	def __str__(self):
-		return "%s - %s - %s - %s" % (self.sourceTitle, self.title, self.date, self.url) 
-
-
 def createIso(podcasts, isoPath):
 	"""Given a sequence of Podcasts, creates an ISO image at the target path with those podcasts on it.
 
@@ -336,14 +358,10 @@ def createIso(podcasts, isoPath):
 	if proc.poll() is not None: # None means the process hasn't returned a return code yet
 		raise IOError("Mkisofs died immediately!")
 	
-	cleanPat = re.compile(r"[^A-Za-z0-9 ._-]")
-	def cleanStr(s, maxLen):
-		return cleanPat.sub("", s)[:maxLen]
-	
 	idx = 1
 	for p in podcasts:
 		if p.localPath is not None:
-			proc.stdin.write("%s - %s - %02u-%02u-%02u (%03u).%s=%s\n" % (cleanStr(p.sourceTitle, 35), cleanStr(p.title, 50), p.date.year, p.date.month, p.date.day, idx, p.ext, p.localPath))
+			proc.stdin.write("=%s\n" % (cleanStr(p.sourceTitle, 35), cleanStr(p.title, 50), p.date.year, p.date.month, p.date.day, idx, p.ext, p.localPath))
 			idx += 1
 	(stdout, stderr) = proc.communicate()
 	

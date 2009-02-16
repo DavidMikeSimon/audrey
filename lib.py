@@ -108,7 +108,10 @@ class FeedchkProcess(AudreyProcess):
 			http_modified = d.modified
 		
 		if "status" in d and d.status == 301 and "href" in d:
-			self.logMsg("Server status code 301 requesting we switch to url %s" % d.href)
+			self.logMsg("Writing to %s, status code 301 requesting we switch to url %s" % (fn, d.href))
+			fh = open(os.path.join(self.workingDir, fn), "w")
+			fh.write("%s\n" % d.href)
+			fh.close()
 		
 		files = [] # A list of (edate, url, title) tuples
 	

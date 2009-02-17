@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue, traceback
+import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue, socket
 
 
 class AudreyProcess(processing.Process):
@@ -88,12 +88,15 @@ class FeedchkProcess(AudreyProcess):
 				last_entry_date = datetime.datetime(*tuple([int(x) for x in last_entry_line.split(",")]))
 			fh.close()
 		
-		d = feedparser.parse(
-			url,
-			etag = http_etag,
-			modified = http_modified,
-			agent = "Audrey/0.1"
-		)
+		try:
+			d = feedparser.parse(
+				url,
+				etag = http_etag,
+				modified = http_modified,
+				agent = "Audrey/0.1"
+			)
+		except socket.timeout:
+			raise IOError("Timed out when retrieving feed at url \"%s\"" % url)
 		
 		if "status" not in d:
 			raise IOError("Unable to retrieve feed at url \"%s\"" % url)
@@ -213,7 +216,10 @@ class FetchProcess(AudreyProcess):
 		destPath = os.path.join(self.workingDir, "temp-fetch")
 		try:
 			self.logMsg("Fetching URL %s" % url)
-			(retrFn, retrHeaders) = urllib.urlretrieve(url, destPath)
+			try:
+				(retrFn, retrHeaders) = urllib.urlretrieve(url, destPath)
+			except socket.timeout:
+				raise IOError("Timed out when fetching URL %s" % url)
 			self.logMsg("Done fetching URL %s" % url)
 		except:
 			if os.path.isfile(destPath):
@@ -294,6 +300,8 @@ class AudreyController:
 	"""
 	
 	def __init__(self):
+		socket.setdefaulttimeout(60)
+
 		# Create the working directory if necessary
 		self._workingDir = os.path.expanduser("~/audrey-working")
 		if not os.path.isdir(self._workingDir):
@@ -303,7 +311,7 @@ class AudreyController:
 				pass
 		if not os.path.isdir(self._workingDir):
 			raise IOError("Unable to find or create directory \"%s\"" % self._workingDir)
-
+		
 		# Delete any left-over temp files from possible prior crashes
 		for fn in os.listdir(self._workingDir):
 			if fn.startswith("temp-"):
@@ -400,14 +408,6 @@ def burnDisc(isoPath):
 
 
 if __name__ == "__main__":
-#	s = Source("http://www.theskepticsguide.org/5x5/rss_5x5.xml")
-#	s.last_entry_date = datetime.datetime(2009, 1, 25)
-#	s.http_etag = None
-#	s.http_modified = None
-#	podcasts = [p for p in s.read()]
-#	for p in podcasts:
-#		print p
-#		p.download()
 #	createIso(podcasts, os.path.join(queueDir(), "test.iso"))
 #	burnDisc(os.path.join(queueDir(), "test.iso"))
 	controller = AudreyController()

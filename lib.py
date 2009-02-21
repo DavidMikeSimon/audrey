@@ -131,7 +131,7 @@ class FeedchkProcess(AudreyProcess):
 			if newest_entry is None or edate > newest_entry:
 				newest_entry = edate
 			if last_entry_date is not None and edate > last_entry_date:
-				fTitle = "%04u-%02u-%02u-%02u:%02u %s - %s" % (
+				fTitle = "%04u-%02u-%02u-%02u%02u %s - %s" % (
 					edate.year,
 					edate.month,
 					edate.day,

@@ -1,5 +1,7 @@
 #!/usr/bin/python
 
+from __future__ import division
+
 import feedparser, time, datetime, traceback, urllib, os, random, subprocess, re, processing, Queue, socket
 
 
@@ -267,13 +269,85 @@ class IsobuildProcess(AudreyProcess):
 	Writes the following working files:
 	discburn-iso-* - Read by the discburn process.
 	"""
-
+	
+	# If both REQ values are passed, or either TRIP value is passed, create an ISO
+	REQ_DAYS = 7 # Oldest file should be this many days old
+	REQ_SIZE = 300 # We should be burning a disc of at least this many MB
+	TRIP_DAYS = 14 # If oldest file is this many days old, burn a disc for sure
+	TRIP_SIZE = 500 # If we have this many MB of files to burn, burn a disc for sure
+	MAX_SIZE = 600 # Don't burn more than this many MB of files
+	
 	def __init__(self, workingDir):
 		super(IsobuildProcess, self).__init__(workingDir)
+	
+	def _makeIso(self, filenames):
+		targetFn = "discburn-iso-%s.iso" % (str(datetime.datetime.now()).replace(" ", "-"))
+		self.logMsg("Generating %s" % targetFn)
+		
+		try:
+			proc = subprocess.Popen(
+				("genisoimage", "-l", "-r", "-J", "-graft-points", "-o", os.path.join(self.workingDir, "temp-%s" % targetFn), "-path-list", "-"),
+				stdin = subprocess.PIPE,
+				stdout = subprocess.PIPE,
+				stderr = subprocess.STDOUT
+			)
+		except OSError, e:
+			raise IOError("Unable to run genisoimage : %s" % str(e))
+		
+		if proc.poll() is not None: # None means the process hasn't returned a return code yet
+			raise IOError("Genisoimage died immediately!")
+		
+		for fn in filenames:
+			self.logMsg("Adding %s" % fn)
+			fullPath = os.path.join(self.workingDir, fn)
+			proc.stdin.write("%s=%s\n" % (fn[14:], fullPath))
+		(stdout, stderr) = proc.communicate()
+		
+		if proc.returncode != 0:
+			raise IOError("Genisoimage reported an error! Return code %s, output %s" % (proc.returncode, stdout))
+		
+		# Looks like the ISO was created correctly, so let's rename the temp ISO and delete the input files
+		self.logMsg("Finished generating %s, renaming and deleting input files" % targetFn)
+		os.rename(os.path.join(self.workingDir, "temp-%s" % targetFn), os.path.join(self.workingDir, targetFn)) # Give control to DiscburnProcess
+		for fn in filenames:
+			fullPath = os.path.join(self.workingDir, fn)
+			os.unlink(fullPath)
+		
+		self.logMsg("Generation of %s completed successfully" % targetFn)
+		
+		return True
 	
 	def doStuff(self):
 		while True:
 			self.pullEvent()
+			
+			fileDescs = [
+				(
+					fn,
+					os.path.getsize(os.path.join(self.workingDir, fn))/(1024*1024), # Size in megabytes
+					(time.time() - os.path.getmtime(os.path.join(self.workingDir, fn)))/(60*60*24), # Age in days since fetch (not the RSS item date)
+				)
+				for fn in os.listdir(self.workingDir)
+				if fn.startswith("isobuild-item-")
+			]
+			
+			if len(fileDescs) > 0:
+				fileDescs.sort(cmp = lambda x, y: cmp(y[2], x[2]))
+				greatestAge = fileDescs[0][2]
+				toBurn = []
+				totalSize = 0
+				for (fn, size, mtime) in fileDescs:
+					if totalSize + size >= self.MAX_SIZE:
+						continue
+					toBurn.append(fn)
+					totalSize += size
+				if (greatestAge > self.REQ_DAYS and totalSize > self.REQ_SIZE) or greatestAge > self.TRIP_DAYS or totalSize > self.TRIP_SIZE:
+					self.logMsg("Going to create an ISO with %.3f MB of item data, oldest %.3f days old" % (totalSize, greatestAge))
+					try:
+						self._makeIso([f[0] for f in fileDescs])
+					except IOError, e:
+						self.logMsg("Error creating ISO - %s" % str(e))
+			
 			time.sleep(1)
 
 
@@ -357,33 +431,6 @@ class AudreyController:
 				raise RuntimeError("Subprocess died")
 			
 		return self._statusMsg
-
-
-def createIso(podcasts, isoPath):
-	"""Given a sequence of Podcasts, creates an ISO image at the target path with those podcasts on it.
-
-	Blocks during this entire procedure.
-	
-	Returns True on success. On failure, throws IOError. 
-	"""
-	try:
-		proc = subprocess.Popen(("genisoimage", "-l", "-r", "-J", "-graft-points", "-o", isoPath, "-path-list", "-"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
-	except OSError, e:
-		raise IOError("Unable to run genisoimage : %s" % str(e))
-
-	if proc.poll() is not None: # None means the process hasn't returned a return code yet
-		raise IOError("Mkisofs died immediately!")
-	
-	idx = 1
-	for p in podcasts:
-		if p.localPath is not None:
-			proc.stdin.write("=%s\n" % (cleanStr(p.sourceTitle, 35), cleanStr(p.title, 50), p.date.year, p.date.month, p.date.day, idx, p.ext, p.localPath))
-			idx += 1
-	(stdout, stderr) = proc.communicate()
-	
-	if proc.returncode != 0:
-		raise IOError("Mkisofs reported an error! Return code %s, output %s" % (proc.returncode, stdout))
-	return True
 
 
 def burnDisc(isoPath):

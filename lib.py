@@ -385,6 +385,27 @@ class DiscburnProcess(AudreyProcess):
 	
 	def _burnIso(self, fn):
 		isoPath = os.path.join(self.workingDir, fn)
+		if not os.path.exists(isoPath):
+			raise IOError("No such file %s" % isoPath)
+		
+		try:
+			proc = subprocess.Popen(
+				("wodim", "-tao", "speed=10", "dev=/dev/cdrw", isoPath),
+				stdin = subprocess.PIPE,
+				stdout = subprocess.PIPE,
+				stderr = subprocess.STDOUT
+			)
+		except OSError, e:
+			raise IOError("Unable to run wodim : %s" % str(e))
+		
+		(stdout, stderr) = proc.communicate()
+		if proc.returncode != 0:
+			raise IOError("Wodim reported an error! Return code %s, output %s" % (proc.returncode, stdout))
+		
+		self.logMsg("Burn of %s completed successfully, deleting ISO" % fn)
+		os.unlink(isoPath)
+		
+		return True
 	
 	def doStuff(self):
 		while True:
@@ -392,37 +413,37 @@ class DiscburnProcess(AudreyProcess):
 			if event is not None and event == "EatButtonPushed":
 				self.fed = None # The user says that they've put in a blank disc, but they aren't necessarily trustworthy, so let's check
 			
-			cdStatus = self._checkCd()
+			if self.fed is None:
+				self.statusMsg("Please wait, checking disc...")
 			
 			if self.fed is None:
 				# We don't know if we are fed. Let's retract the tray so that we can see what the disc actually is.
-				self.logMsg("Fed status is unknown. Attempting to retract and rescan.")
+				self.logMsg("Fed status is unknown. Attempting to retract before scanning.")
 				self._retractTray()
 				time.sleep(4)
-				cdStatus = self._checkCd() # This is probably the real status now
-				self.logMsg("Post retraction cd status: %u" % cdStatus)
+			
+			cdStatus = self._checkCd()
 			
 			if cdStatus == 0:
 				# Blank CD is inserted.
 				self.fed = True
 			elif cdStatus == 1:
 				# There's a non-blank CD inserted
-				self.logMSg("Non-blank CD currently inserted, setting fed status to False and ejecting tray.")
+				self.logMsg("Non-blank CD currently inserted, setting fed status to False and ejecting tray.")
 				self.fed = False
-				self._ejectTray()
+				self._ejectTray() # Eject the tray so that the user can extract the burned disc
 			elif cdStatus == 2:
 				# There's no CD inserted, or the tray is ejected
 				if self.fed is not True:
 					if self.fed is None:
+						self.logMsg("Updating unknown Fed status to False; tray is presumably closed yet still can't find any medium.")
 						self.fed = False
-					self._ejectTray()
+					self._ejectTray() # Force the tray to stay ejected until the user clicks the 'Eat!' button
 			
-			if self.fed is None:
-				self.statusMsg("Please wait...")
-			elif self.fed is True:
-				self.statusMsg("No action required.")
+			if self.fed is True:
+				self.statusMsg("System OK. No action required.")
 			else:
-				self.statusMsg("Action required! Feed me! Feed me!\n\nStep 1: If there is a disc on the tray, put it into a sleeve, then put it somewhere where you'll remember to send it.\n\nStep 2: Place a blank disc onto the tray, label side up, then click the 'Eat!' button.")
+				self.statusMsg("Action required! Feed me! Feed me!\n\n\nStep 1: If there is a disc on the tray, put it into a sleeve.\n\n\nStep 2: Place a blank disc onto the tray, label side up, then click the 'Eat!' button.")
 			
 			if cdStatus == 0:
 				isos = []
@@ -466,6 +487,8 @@ class AudreyController:
 		for fn in os.listdir(self._workingDir):
 			if fn.startswith("temp-"):
 				os.unlink(os.path.join(self._workingDir, fn))
+
+		self.currentEvent = None
 		
 		self._statusMsg = "Initializing controller..."
 		self._subprocs = [
@@ -479,6 +502,10 @@ class AudreyController:
 		fn = file(os.path.join(self._workingDir, "log"), "a")
 		fn.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
 		fn.close()
+	
+	def pushEvent(self, eventMsg):
+		"""Adds a string to be sent to all the subprocesses as an event. Only the most recent event between checks reaches each subprocess."""
+		self.currentEvent = eventMsg
 	
 	def start(self):
 		self._addToLog("AudreyController starting")
@@ -502,39 +529,21 @@ class AudreyController:
 			except Queue.Empty:
 				pass
 			
+			if self.currentEvent is not None:
+				for p in self._subprocs:
+					p._eventQueue.put(self.currentEvent)
+				self.currentEvent = None
+			
 			if not p.isAlive():
 				self._addToLog("Subprocess %s died, killing all subprocesses and raising RuntimeError" % p.__class__.__name__)
 				for p in self._subprocs:
 					p.terminate()
 				raise RuntimeError("Subprocess died")
-			
+		
 		return self._statusMsg
 
 
-def burnDisc(isoPath):
-	"""Given a path to an ISO, burns it to disc.
-	
-	Blocks during this entire procedure.
-
-	Returns True on success. On failure, throws IOError.
-	"""
-	if not os.path.exists(isoPath):
-		raise IOError("No such file %s" % isoPath)
-	
-	try:
-		proc = subprocess.Popen(("wodim", "-tao", "-eject", "speed=10", "dev=/dev/cdrw", isoPath), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
-	except OSError, e:
-		raise IOError("Unable to run wodim : %s" % str(e))
-	
-	(stdout, stderr) = proc.communicate()
-	if proc.returncode != 0:
-		raise IOError("Wodim reported an error! Return code %s, output %s" % (proc.returncode, stdout))
-	return True
-
-
 if __name__ == "__main__":
-#	createIso(podcasts, os.path.join(queueDir(), "test.iso"))
-#	burnDisc(os.path.join(queueDir(), "test.iso"))
 	controller = AudreyController()
 	controller.start()
 	while True:

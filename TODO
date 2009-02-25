@@ -1,2 +1,4 @@
 * Better extension-guessing (if necessary...) 
 * Why doesn't TWIS work?
+* Come up with a monitor script that will restart Audrey as necessary.
+* Sometimes Audrey can be difficult to kill. Maybe need to use a call besides sys.exit() to keep the 'processing' module from calling join()?

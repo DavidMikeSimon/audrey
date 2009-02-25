@@ -307,7 +307,7 @@ class IsobuildProcess(AudreyProcess):
 			raise IOError("Genisoimage reported an error! Return code %s, output %s" % (proc.returncode, stdout))
 		
 		# Looks like the ISO was created correctly, so let's rename the temp ISO and delete the input files
-		self.logMsg("Finished generating %s, renaming and deleting input files" % targetFn)
+		self.logMsg("Finished generating %s, handing ISO to DiscburnProcess and deleting input files" % targetFn)
 		os.rename(os.path.join(self.workingDir, "temp-%s" % targetFn), os.path.join(self.workingDir, targetFn)) # Give control to DiscburnProcess
 		for fn in filenames:
 			fullPath = os.path.join(self.workingDir, fn)
@@ -357,13 +357,89 @@ class DiscburnProcess(AudreyProcess):
 	Reads the following working files:
 	discburn-iso-* - Files containing ISO images to burn. Read in lexciographical order. Deleted once successfully burned.
 	"""
-
+	
 	def __init__(self, workingDir):
 		super(DiscburnProcess, self).__init__(workingDir)
+		self.fed = None # Whether or not the user has told us that we have a blank CD. None if unknown.
+	
+	def _checkCd(self):
+		"""Returns 0 if we seem to have a blank CD, 1 if we seem to have a non-blank disc, 2 if we seem to have no media."""
+		try:
+			proc = subprocess.Popen(("cd-info", "--no-device-info"), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+		except OSError, e:
+			raise IOError("Unable to run cd-info : %s" % str(e))
+		(stdout, stderr) = proc.communicate()
+		
+		if "Input/output error" in stdout:
+			return 0
+		elif "No medium found" in stdout:
+			return 2
+		else:
+			return 1
+	
+	def _ejectTray(self):
+		os.system("eject")
+	
+	def _retractTray(self):
+		os.system("eject -t")
+	
+	def _burnIso(self, fn):
+		isoPath = os.path.join(self.workingDir, fn)
 	
 	def doStuff(self):
 		while True:
-			self.pullEvent()
+			event = self.pullEvent()
+			if event is not None and event == "EatButtonPushed":
+				self.fed = None # The user says that they've put in a blank disc, but they aren't necessarily trustworthy, so let's check
+			
+			cdStatus = self._checkCd()
+			
+			if self.fed is None:
+				# We don't know if we are fed. Let's retract the tray so that we can see what the disc actually is.
+				self.logMsg("Fed status is unknown. Attempting to retract and rescan.")
+				self._retractTray()
+				time.sleep(4)
+				cdStatus = self._checkCd() # This is probably the real status now
+				self.logMsg("Post retraction cd status: %u" % cdStatus)
+			
+			if cdStatus == 0:
+				# Blank CD is inserted.
+				self.fed = True
+			elif cdStatus == 1:
+				# There's a non-blank CD inserted
+				self.logMSg("Non-blank CD currently inserted, setting fed status to False and ejecting tray.")
+				self.fed = False
+				self._ejectTray()
+			elif cdStatus == 2:
+				# There's no CD inserted, or the tray is ejected
+				if self.fed is not True:
+					if self.fed is None:
+						self.fed = False
+					self._ejectTray()
+			
+			if self.fed is None:
+				self.statusMsg("Please wait...")
+			elif self.fed is True:
+				self.statusMsg("No action required.")
+			else:
+				self.statusMsg("Action required! Feed me! Feed me!\n\nStep 1: If there is a disc on the tray, put it into a sleeve, then put it somewhere where you'll remember to send it.\n\nStep 2: Place a blank disc onto the tray, label side up, then click the 'Eat!' button.")
+			
+			if cdStatus == 0:
+				isos = []
+				for fn in os.listdir(self.workingDir):
+					if fn.startswith("discburn-iso-"):
+						isos.append(fn)
+				isos.sort()
+				if len(isos) > 0:
+					try:
+						self.logMsg("Attempting to burn %s" % isos[0])
+						self._burnIso(isos[0])
+					except IOError, e:
+						self.logMsg("Error burning %s - %s" % (isos[0], str(e)))
+					# Whether or not the burn succeeded, it's now time to insert a new blank disc.
+					self.fed = False
+					self._ejectTray()
+			
 			time.sleep(0.5)
 
 
@@ -410,7 +486,9 @@ class AudreyController:
 			p.start()
 	
 	def pump(self):
-		"""Checks for messages from the subprocesses and returns the current status string."""
+		"""Checks for messages from the subprocesses and returns the current status string.
+		
+		Raises RuntimeError if something unrecoverably bad happened since the last pump()."""
 		for p in self._subprocs:
 			try:
 				while True:

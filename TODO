@@ -1,6 +1,8 @@
 * Better extension-guessing (if necessary...) 
-* Why doesn't TWIS work?
+* Why doesn't TWIS work? Is Wait Wait failing to work?
 * Come up with a monitor script that will restart Audrey as necessary.
 * Sometimes Audrey can be difficult to kill. Maybe need to use a call besides sys.exit() to keep the 'processing' module from calling join()?
 * To see if we should ask user to sleeve CD or not, try mounting it. Eject and retract before doing this, though, because sometimes it doesn't like to mount CDs after they've just been burned.
+* Newline after "System OK."
+* Documentation : change "humming noise" to "soft noise"
 * Indicate to the user somehow whether or not the network is up. But don't make it an error.

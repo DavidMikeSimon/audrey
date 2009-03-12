@@ -139,8 +139,8 @@ class FeedchkProcess(AudreyProcess):
 					edate.day,
 					edate.hour,
 					edate.minute,
-					cleanStr(d.feed.title, 40),
-					cleanStr(entry.title, 40),
+					cleanStr(d.feed.title, 16),
+					cleanStr(entry.title, 15),
 				)
 				files.append((edate, entry.enclosures[0].href, fTitle))
 		if newest_entry is not None:

@@ -272,10 +272,10 @@ class IsobuildProcess(AudreyProcess):
 	
 	# If both REQ values are passed, or either TRIP value is passed, create an ISO
 	REQ_DAYS = 7 # Oldest file should be this many days old
-	REQ_SIZE = 300 # We should be burning a disc of at least this many MB
-	TRIP_DAYS = 14 # If oldest file is this many days old, burn a disc for sure
-	TRIP_SIZE = 500 # If we have this many MB of files to burn, burn a disc for sure
-	MAX_SIZE = 600 # Don't burn more than this many MB of files
+	REQ_SIZE = 400 # We should be building an ISO of at least this many MB
+	TRIP_DAYS = 14 # If oldest file is this many days old, build an ISO for sure
+	TRIP_SIZE = 550 # If we have this many MB of files to burn, build an ISO for sure
+	MAX_SIZE = 600 # Don't build an ISO with more than this many MB of files
 	
 	def __init__(self, workingDir):
 		super(IsobuildProcess, self).__init__(workingDir)
@@ -441,7 +441,7 @@ class DiscburnProcess(AudreyProcess):
 					self._ejectTray() # Force the tray to stay ejected until the user clicks the 'Eat!' button
 			
 			if self.fed is True:
-				self.statusMsg("System OK. No action required.")
+				self.statusMsg("System OK.\n\nNo action required.")
 			else:
 				self.statusMsg("Action required! Feed me! Feed me!\n\n\nStep 1: If there is a disc on the tray, put it into a sleeve.\n\n\nStep 2: Place a blank disc onto the tray, label side up, then click the 'Eat!' button.")
 			

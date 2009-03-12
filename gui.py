@@ -26,7 +26,7 @@ class MainWindow:
 		
 		# Status message
 		self.statusMsg = gtk.Label("Status"); self.statusMsg.set_line_wrap(True); winBox.pack_start(self.statusMsg)
-
+		
 		# The 'Eat!' button
 		self.eatBtn = gtk.Button("Eat!"); self.eatBtn.connect("clicked", self.eatClicked); winBox.pack_start(self.eatBtn, expand = False, padding = 30)
 		
